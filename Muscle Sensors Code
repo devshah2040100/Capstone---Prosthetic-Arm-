@@ -1,0 +1,201 @@
+\begin{lstlisting}[language=C++, caption=Sensor Control Code for Prosthetic Arm, label=lst:sensor_code, basicstyle=\ttfamily\footnotesize, keywordstyle=\color{blue}, commentstyle=\color{green!50!black}, stringstyle=\color{red}, breaklines=true]
+#include <Servo.h>
+#define SAMPLE_RATE 500
+#define BAUD_RATE 115200
+#define INPUT_PIN_1 A0
+#define INPUT_PIN_2 A1
+#define INPUT_PIN_3 A2
+#define BUFFER_SIZE 128
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+#define SERVO_MIN  125 // Minimum pulse length count (out of 4096)
+#define SERVO_MAX  575 // Maximum pulse length count (out of 4096)
+
+
+#define SERVO1_PIN 0 // Pin for Servo 1
+#define SERVO2_PIN 2 // Pin for Servo 2
+#define SERVO3_PIN 3 // Pin for Servo 3
+#define SERVO4_PIN 4
+#define SERVO5_PIN 6 // Pin for Servo 3
+
+#define GRIP_PATTERN 'g' // Command to enable servo 3 control
+#define GRIP_PATTERN1 'j'
+#define GRIP_PATTERN2 'l'
+bool servo3ControlEnabled = false; // Flag to indicate if servo 3 control is enabled
+bool servo3Toggle = false; // Flag to indicate servo 3 position toggle
+
+
+int circular_buffer[BUFFER_SIZE];
+int data_index, sum;
+int flexValue1, lastSensorValue = 0;
+
+Servo myServo;
+int servoAngle = 0;
+
+void setup() {
+  Serial.begin(BAUD_RATE);
+  Serial.println("Human Hand Control");
+  pwm.begin();
+  pwm.setPWMFreq(60);
+
+  // Set initial servo positions
+  pwm.setPWM(SERVO1_PIN, 0, SERVO_MIN);
+  pwm.setPWM(SERVO2_PIN, 0, SERVO_MIN);
+  pwm.setPWM(SERVO3_PIN, 0, SERVO_MAX);
+  pwm.setPWM(SERVO4_PIN, 0, SERVO_MAX);
+  pwm.setPWM(SERVO5_PIN, 0, SERVO_MIN);
+}
+
+void loop() {
+  // Calculate elapsed time
+  int lastSensorValue_1 = 0;
+  int lastSensorValue_2 = 0;
+  static unsigned long past = 0;
+  unsigned long present = micros();
+  unsigned long interval = present - past;
+  past = present;
+
+  // Run timer
+  static long timer = 0;
+  timer -= interval;
+
+  // Sample and get envelop
+  if (timer < 0) {
+    timer += 1000000 / SAMPLE_RATE;
+    int sensor_value_1 = analogRead(INPUT_PIN_1);
+    int signal_1 = EMGFilter(sensor_value_1);
+    int envelop_1 = getEnvelop(abs(signal_1));
+    Serial.print(signal_1);
+    Serial.print("1,");
+    Serial.println(envelop_1);
+
+    // Control servo based on envelop value
+    if (envelop_1 > 20 && lastSensorValue_1 <= 20) {
+      // Toggle servo position
+      servo3Toggle = !servo3Toggle;
+      if (servo3Toggle) {
+        pwm.setPWM(SERVO2_PIN, 0, SERVO_MAX);
+        pwm.setPWM(SERVO3_PIN, 0, SERVO_MIN);
+        pwm.setPWM(SERVO4_PIN, 0, SERVO_MIN);
+        pwm.setPWM(SERVO5_PIN, 0, SERVO_MAX);// Move servo 3 to min position
+      } else {
+        pwm.setPWM(SERVO2_PIN, 0, SERVO_MIN);
+        pwm.setPWM(SERVO3_PIN, 0, SERVO_MAX);
+        pwm.setPWM(SERVO4_PIN, 0, SERVO_MAX);
+        pwm.setPWM(SERVO5_PIN, 0, SERVO_MIN);// Move servo 3 to max position
+      }
+    }
+
+    // Store the current sensor value
+    lastSensorValue_1 = envelop_1;
+  }
+  past = 0;
+  present = micros();
+  interval = present - past;
+  past = present;
+
+  // Run timer
+  timer = 0;
+  timer -= interval;
+   
+  if(timer < 0) {
+    timer += 1000000 / SAMPLE_RATE;
+    int sensor_value_2 = analogRead(INPUT_PIN_2);
+    int signal_2 = EMGFilter(sensor_value_2);
+    int envelop_2 = getEnvelop(abs(signal_2));
+    Serial.print("2,");
+    Serial.print(signal_2);
+    Serial.print(",");
+    Serial.println(envelop_2);
+    if (envelop_2 > 60 && lastSensorValue_2 <= 60) {
+      // Toggle servo position
+      servo3Toggle = !servo3Toggle;
+      if (servo3Toggle) {
+        pwm.setPWM(SERVO2_PIN, 0, SERVO_MAX);
+       
+      } else {
+        pwm.setPWM(SERVO2_PIN, 0, SERVO_MIN);
+       
+      }
+    }
+
+    // Store the current sensor value
+    lastSensorValue = envelop_2;
+  }
+
+  if (Serial.available() > 0) {
+    char input = Serial.read();  // Read the incoming serial data
+    
+    if (input == GRIP_PATTERN) {
+      servo3ControlEnabled = true; 
+      pwm.setPWM(SERVO1_PIN, 0, 350);
+     // Enable servo 3 control
+    } 
+    
+  
+ else if (input == GRIP_PATTERN1){
+  pwm.setPWM(SERVO1_PIN, 0, 400);
+
+  
+    }
+ else if (input == GRIP_PATTERN2){
+  pwm.setPWM(SERVO1_PIN, 0, SERVO_MIN);
+ 
+
+  
+ }
+}
+}
+
+// Envelop detection algorithm
+int getEnvelop(int abs_emg) {
+  sum -= circular_buffer[data_index];
+  sum += abs_emg;
+  circular_buffer[data_index] = abs_emg;
+  data_index = (data_index + 1) % BUFFER_SIZE;
+  return (sum / BUFFER_SIZE) * 2;
+}
+
+// Band-Pass Butterworth IIR digital filter, generated using filter_gen.py.
+// Sampling rate: 500.0 Hz, frequency: [74.5, 149.5] Hz.
+// Filter is order 4, implemented as second-order sections (biquads).
+// Reference: 
+// https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.butter.html
+// https://courses.ideate.cmu.edu/16-223/f2020/Arduino/FilterDemos/filter_gen.py
+float EMGFilter(float input)
+{
+  float output = input;
+  {
+    static float z1, z2; // filter section state
+    float x = output - 0.05159732*z1 - 0.36347401*z2;
+    output = 0.01856301*x + 0.03712602*z1 + 0.01856301*z2;
+    z2 = z1;
+    z1 = x;
+  }
+  {
+    static float z1, z2; // filter section state
+    float x = output - -0.53945795*z1 - 0.39764934*z2;
+    output = 1.00000000*x + -2.00000000*z1 + 1.00000000*z2;
+    z2 = z1;
+    z1 = x;
+  }
+  {
+    static float z1, z2; // filter section state
+    float x = output - 0.47319594*z1 - 0.70744137*z2;
+    output = 1.00000000*x + 2.00000000*z1 + 1.00000000*z2;
+    z2 = z1;
+    z1 = x;
+  }
+  {
+    static float z1, z2; // filter section state
+    float x = output - -1.00211112*z1 - 0.74520226*z2;
+    output = 1.00000000*x + -2.00000000*z1 + 1.00000000*z2;
+    z2 = z1;
+    z1 = x;
+  }
+  return output;
+}
+\end{lstlisting}
